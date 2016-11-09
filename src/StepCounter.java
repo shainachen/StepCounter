@@ -1,48 +1,74 @@
 import java.util.Arrays;
 
 public class StepCounter {
-	private static final int WINDOW_LENGTH = 3;
-	private static final int THRESHOLD_LIMIT = 1;
-	private static final int MINIMUM_LIMIT = 2;
-	private static final int THRESHOLD_MULTIPLE=5;
+	private static final int WINDOW_LENGTH = 5;
+	private static final double DEVIATION_SCALAR= 0.8;
+	private static final int THRESHOLD_MULTIPLE=5; //multiplication factor for threshold to ensure it is above the magnitudes of invalid steps
 	public static void main(String[] args) {
-		String[] columnNames={"time", "accel-x", "accel-y", "accel-z"};
-		CSVData test = new CSVData("data/50StepWalkMale.csv", columnNames, 1);
+		String[] columnNames={"time", "gyro-x", "gyro-y", "gyro-z"};
+		CSVData test = new CSVData("data/50StepWalkFemale(2).csv", columnNames, 1);
 		test.correctTime(test);
-		System.out.println(countSteps(test.getColumn(1),test.getRows(1,test.getNumRows()-1), WINDOW_LENGTH));
+		System.out.println("Improved Algorithm:"+countSteps(test.getColumn(0),test.getRows(1,test.getNumRows()-1), 10));
+		System.out.println("Old Algorithm:"+countSteps(test.getColumn(0),test.getRows(1,test.getNumRows()-1)));
 	}
-	
+	//improved algorithm
 	private static int countSteps(double[] times, double[][] sensorData, int windowLength) {
 		int stepCount = 0;
 		double[] arr = new double[times.length];
 		arr = calculateMagnitudes(sensorData);
-		//arr = NoiseSmoothing.generalRunningAverage(arr, 3);
-		double[] thresholds = calculateWindow(arr, WINDOW_LENGTH);
-		for(int i = 1; i < arr.length; i++) {
+		double mean = calculateMean(arr);
+		double minLimit = calculateMinLimit(mean); //minimum magnitude to be a reasonable step
+//		arr = NoiseSmoothing.generalRunningAverage(arr, 10);
+		double[] thresholds = calculateWindow(arr, windowLength, minLimit);
+		for(int i = 1; i < arr.length-1; i++) {
 			if (arr[i] > arr[i-1] && arr[i] > arr[i+1]) {
 				if(arr[i] > thresholds[i]) {
 					stepCount++;
-					System.out.println(stepCount + " " + times[i]);
+//					System.out.println(stepCount +" " + times[i]);
 				}
 			}
 		}
 		return stepCount;	
 	}	
+	//old algorithm
+	private static int countSteps(double[] times, double[][] sensorData) {
+		int stepCount = 0;
+		double[] arr = new double[times.length];
+		arr = calculateMagnitudes(sensorData);
+		double mean = calculateMean(arr);
+		double deviation = calculateStandardDeviation(arr, mean);
+//		System.out.println(mean+deviation);
+		for(int i = 1; i < arr.length-1; i++) {
+			if (arr[i] > arr[i-1] && arr[i] > arr[i+1]) {
+				if(arr[i] > (mean+deviation)*DEVIATION_SCALAR) {
+					stepCount++;
+//					System.out.println(stepCount +" " + times[i]/1000);
+				}
+			}
+		}
+		
+		return stepCount;
+	}
 	
+	public static double calculateMinLimit(double mean){
+		return 0.54*mean+0.72;
+	}
 	/***
-	 * Returns array with threshold values
-	 * @param arr
-	 * @param windowLength
-	 * @return
+	 * Returns array of threshold values for input window size away from each arr value. If magnitude is unreasonably 
+	 * low(not a step), threshold will be set to an extreme high value to avoid counting peaks in no-step noise areas.
+	 * @param arr array of magnitudes to calculate thresholds from
+	 * @param windowLength length of "range" of values next to each magnitude value to calculate threshold from
+	 * @return array of threshold values for every magnitude value calculated with int windowLength values to the left/right of
+	 * magnitude value
 	 */
-	public static double[] calculateWindow(double[] arr, int windowLength) {
+	public static double[] calculateWindow(double[] arr, int windowLength, double minLimit) {
 		double[] result=new double[arr.length];
 		for (int i = 0; i < arr.length; i++){
 			if(i+windowLength < arr.length) {
 				if(i-windowLength >= 0) {
 					double meanForInterval = calculateMeanInInterval(arr, i-windowLength, i+windowLength);
 					double deviationForInterval = calculateStandardDeviationInInterval(arr, meanForInterval, i-windowLength, i+windowLength);
-					if(belowThreshold(arr, WINDOW_LENGTH, i, MINIMUM_LIMIT)){
+					if(magnitudeIsUnreasonblySmall(arr, WINDOW_LENGTH, i, minLimit)){
 						result[i]=((meanForInterval+deviationForInterval))*THRESHOLD_MULTIPLE;
 					}else{
 						result[i] = (meanForInterval+deviationForInterval);
@@ -50,7 +76,7 @@ public class StepCounter {
 				} else {
 					double meanForInterval = calculateMeanInInterval(arr, 0, i+windowLength);
 					double deviationForInterval = calculateStandardDeviationInInterval(arr, meanForInterval, 0, i+windowLength);
-					if(belowThreshold(arr, WINDOW_LENGTH, i+WINDOW_LENGTH, MINIMUM_LIMIT)){
+					if(magnitudeIsUnreasonblySmall(arr, WINDOW_LENGTH, i+WINDOW_LENGTH, minLimit)){
 						result[i]=((meanForInterval+deviationForInterval))*THRESHOLD_MULTIPLE;
 					}else{
 						result[i] = (meanForInterval+deviationForInterval);
@@ -59,7 +85,7 @@ public class StepCounter {
 			} else {
 				double meanForInterval = calculateMeanInInterval(arr, i-windowLength, arr.length);
 				double deviationForInterval = calculateStandardDeviationInInterval(arr, meanForInterval, i-windowLength, arr.length);
-				if(belowThreshold(arr, WINDOW_LENGTH, i-WINDOW_LENGTH, MINIMUM_LIMIT)){
+				if(magnitudeIsUnreasonblySmall(arr, WINDOW_LENGTH, i-WINDOW_LENGTH, minLimit)){
 					result[i]=((meanForInterval+deviationForInterval))*THRESHOLD_MULTIPLE;
 				}else{
 					result[i] = (meanForInterval+deviationForInterval);
@@ -69,7 +95,38 @@ public class StepCounter {
 		return result;
 	}
 	
-	private static boolean belowThreshold(double[] arr, int windowLength, int index, int threshold) {
+//	public static double[] calculateWindow(double[] arr, int windowLength) {
+//		double[] result=new double[arr.length];
+//		for (int i = 0; i < arr.length; i++){
+//			if(i+windowLength < arr.length) {
+//				if(i-windowLength >= 0) {
+//					double meanForInterval = calculateMeanInInterval(arr, i-windowLength, i+windowLength);
+//					double deviationForInterval = calculateStandardDeviationInInterval(arr, meanForInterval, i-windowLength, i+windowLength);
+//					result[i] = (meanForInterval+deviationForInterval);
+//				} else {
+//					double meanForInterval = calculateMeanInInterval(arr, 0, i+windowLength);
+//					double deviationForInterval = calculateStandardDeviationInInterval(arr, meanForInterval, 0, i+windowLength);
+//					result[i] = (meanForInterval+deviationForInterval);
+//				}
+//			} else {
+//				double meanForInterval = calculateMeanInInterval(arr, i-windowLength, arr.length);
+//				double deviationForInterval = calculateStandardDeviationInInterval(arr, meanForInterval, i-windowLength, arr.length);
+//				result[i] = (meanForInterval+deviationForInterval);
+//			}
+//		}
+//		return result;
+//	}
+	
+	/**
+	 * Checks if the magnitudes of arr are unreasonably small (insignificant data that has magnitudes too small to count
+	 * as steps) within a windowLength range from the arr value index
+	 * @param arr magnitude(accel) values to check from
+	 * @param windowLength range from the arr value
+	 * @param index arr index value to check magnitudes from
+	 * @param threshold threshold for reasonable magnitudes (anything under is considered too small to count as possible steps)
+	 * @return true if >80% of values are under the threshold 
+	 */
+	private static boolean magnitudeIsUnreasonblySmall(double[] arr, int windowLength, int index, double threshold) {
 		int underThresholdCounter = 0;
 		int totalIterations = 0;
 		for(int i = index-windowLength; i < index+windowLength; i++) {
@@ -135,4 +192,3 @@ public class StepCounter {
 		return sum/(double)(endIndex-startIndex);
 	}
 }
-	
